@@ -6,3 +6,4 @@ python-dotenv
 psutil 
 redis
 python-multipart
+packaging

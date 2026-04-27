@@ -56,7 +56,8 @@ async def create_tables():
                 port INTEGER NOT NULL,
                 domain TEXT NOT NULL,
                 status TEXT DEFAULT 'stopped',
-                created_at TIMESTAMP DEFAULT now()
+                created_at TIMESTAMP DEFAULT now(),
+                subfolder Text
             );
 
             CREATE TABLE IF NOT EXISTS metrics (
