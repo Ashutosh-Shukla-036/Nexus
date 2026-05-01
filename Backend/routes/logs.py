@@ -1,6 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import asyncio
 import subprocess
+from logger import logger
 
 # Create a router for logs routes
 router = APIRouter(prefix="/logs", tags=["logs"])
@@ -10,6 +11,7 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 async def stream_logs(websocket: WebSocket, service_name: str):
     # Accept the WebSocket connection
     await websocket.accept()    
+    logger.info(f"Client connected for service {service_name}")
 
     # Start the journalctl process to stream logs
     process = subprocess.Popen(
@@ -18,6 +20,7 @@ async def stream_logs(websocket: WebSocket, service_name: str):
         stderr=subprocess.PIPE,
         text=True
     )
+    logger.info(f"Stream started for service {service_name}")
 
     try:
         # Get the running loop
@@ -33,10 +36,12 @@ async def stream_logs(websocket: WebSocket, service_name: str):
             await websocket.send_text(line)
     except WebSocketDisconnect:
         # Print the error when the client disconnects
-        print(f"Client disconnected for service {service_name}")
+        logger.error(f"Client disconnected for service {service_name}")
+    except Exception as e:
+        logger.error(f"Error in streaming logs: {e}")
     finally:
         # Kill the process when the client disconnects
         process.kill()
         # Print the error when the client disconnects
-        print(f"Stream closed for service {service_name}")
+        logger.info(f"Stream closed for service {service_name}")
     

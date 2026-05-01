@@ -24,7 +24,6 @@ async def connect():
             except Exception as e:
                 # Raise exception for any failure. Will not execute futhure
                 raise Exception(f"Error creating tables: {e}")
-            print("Database connected successfully")
         except Exception as e:
             # Raise exception for any failure. Will not execute futhure
             raise Exception(f"Error connecting to database: {e}")
@@ -37,7 +36,6 @@ async def disconnect():
             # Close the connection pool that we created
             await pool.close()
             pool = None
-            print("Database disconnected successfully")
         except Exception as e:
             # Raise exception for any failure. Will not execute futhure
             raise Exception(f"Error disconnecting from database: {e}")
