@@ -43,7 +43,7 @@
 
 ### Add these to /etc/sudoers file using sudo EDITOR=vim visudo
 ```
-ashutosh-dev ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/journalctl, /usr/bin/tee, /usr/sbin/nginx
+ashutoshshukla ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/journalctl, /usr/bin/tee, /usr/sbin/nginx, /usr/bin/ln, /usr/bin/rm
 ```
 
 ### Update routes/apps.py
