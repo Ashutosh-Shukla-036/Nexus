@@ -8,7 +8,24 @@ from routes import logs
 from routes import apps
 from workers.monitor import start_monitor
 import asyncio
+import logging
 from logger import logger
+
+# Create a filter to silence standard health/polling endpoints
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(
+            req in message for req in [
+                "GET /health",
+                "GET /metrics",
+                "GET /services",
+                "GET /apps"
+            ]
+        )
+
+# Attach filter to uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
 # Lifespan manages startup and shutdown of the app
 # Everything before yield runs on startup
@@ -48,9 +65,21 @@ app.add_middleware(
 # Adding logging middleware
 @app.middleware("http")
 async def log_requests(request, call_next):
-    logger.info(f"{request.method} {request.url.path}")
+    # Paths to ignore for standard GET requests to prevent log spam
+    ignored_paths = ["/health", "/metrics/", "/services/", "/apps/"]
+    
+    should_log = True
+    if request.method == "GET" and any(request.url.path.startswith(p) or request.url.path == p.rstrip('/') for p in ignored_paths):
+        should_log = False
+        
+    if should_log:
+        logger.info(f"{request.method} {request.url.path}")
+        
     response = await call_next(request)
-    logger.info(f"{request.method} {request.url.path} → {response.status_code}")
+    
+    if should_log:
+        logger.info(f"{request.method} {request.url.path} → {response.status_code}")
+        
     return response
 
 # Health check endpoint — used by monitoring tools to verify app is alive

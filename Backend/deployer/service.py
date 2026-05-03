@@ -2,16 +2,11 @@ import subprocess
 import os
 
 # This function is used to create a systemd service file for the application and start the application
-def create_service(app_name: str, path: str, stack: str, port: int, user: str, env_vars: dict = {}) -> dict:
+def create_service(app_name: str, path: str, command: str, port: int, user: str, env_vars: dict = {}) -> dict:
     service_file = f"/etc/systemd/system/{app_name}.service"
     
-    # Determine the correct exec_start command based on the stack
-    if stack in ["fastapi", "flask", "python"]:
-        exec_start = f"{path}/venv/bin/uvicorn main:app --host 0.0.0.0 --port {port}"
-    elif stack in ["express", "node", "nextjs", "koa"]:
-        exec_start = f"/usr/bin/node {path}/index.js"
-    else:
-        return {"success": False, "error": f"Unsupported stack: {stack}"}
+    # Use the detected command directly as ExecStart
+    exec_start = command
 
     # Generating the environment variables
     env_vars_str = ""

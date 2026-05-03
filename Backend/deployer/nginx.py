@@ -1,7 +1,21 @@
 import subprocess
 
-def create_nginx_config(app_name: str, port: int) -> dict:
-    config_content = f"""server {{
+def create_nginx_config(app_name: str, port: int, app_type: str = "service", static_root: str = None) -> dict:
+    if app_type == "static":
+        config_content = f"""server {{
+    listen 80;
+    server_name {app_name}.localhost;
+
+    root {static_root};
+    index index.html;
+
+    location / {{
+        try_files $uri $uri/ /index.html;
+    }}
+}}
+"""
+    else:
+        config_content = f"""server {{
     listen 80;
     server_name {app_name}.localhost;
 

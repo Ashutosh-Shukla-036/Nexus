@@ -29,12 +29,13 @@ class DeployRequest(BaseModel):
 # Create a router for apps routes
 router = APIRouter(prefix="/apps", tags=["apps"])
 
-# Rollback function
-def rollback(app_name: str, app_base: str):
-    subprocess.run(["sudo", "systemctl", "stop", app_name], capture_output=True)
-    subprocess.run(["sudo", "systemctl", "disable", app_name], capture_output=True)
-    subprocess.run(["sudo", "rm", "-f", f"/etc/systemd/system/{app_name}.service"], capture_output=True)
-    subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True)
+# Rollback function — skips systemd cleanup for static apps
+def rollback(app_name: str, app_base: str, app_type: str = "service"):
+    if app_type != "static":
+        subprocess.run(["sudo", "systemctl", "stop", app_name], capture_output=True)
+        subprocess.run(["sudo", "systemctl", "disable", app_name], capture_output=True)
+        subprocess.run(["sudo", "rm", "-f", f"/etc/systemd/system/{app_name}.service"], capture_output=True)
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], capture_output=True)
     subprocess.run(["sudo", "rm", "-f", f"/etc/nginx/sites-enabled/{app_name}"], capture_output=True)
     subprocess.run(["sudo", "rm", "-f", f"/etc/nginx/sites-available/{app_name}"], capture_output=True)
     subprocess.run(["sudo", "systemctl", "reload", "nginx"], capture_output=True)
@@ -49,14 +50,17 @@ async def get_all_apps():
             result = []
             for row in rows:
                 result.append({
+                    "id": str(row["id"]),
                     "name": row["name"],
                     "repo_url": row["repo_url"],
                     "port": row["port"],
+                    "domain": row["domain"],
                     "subfolder": row["subfolder"],
                     "status": row["status"],
+                    "app_type": row["app_type"],
                     "created_at": row["created_at"]
                 })
-            logger.info(f"Apps count: {len(result)}")
+            logger.debug(f"Apps count: {len(result)}")
             return result
     except Exception as e:
         logger.error(f"Error getting all apps: {e}")
@@ -73,11 +77,14 @@ async def get_app(app_name: str):
                 return {"error": "App not found"}
             logger.info(f"App {app_name} found.")
             return {
+                "id": str(row["id"]),
                 "name": row["name"],
                 "repo_url": row["repo_url"],
                 "port": row["port"],
+                "domain": row["domain"],
                 "subfolder": row["subfolder"],
                 "status": row["status"],
+                "app_type": row["app_type"],
                 "created_at": row["created_at"]
             }
     except Exception as e:
@@ -106,6 +113,7 @@ async def scan_repo(request: ScanRepo):
 async def run_deployment(request: DeployRequest):
     app_base = f"/srv/apps/{request.name}"
     loop = asyncio.get_event_loop()
+    app_type = "service"  # default, updated after stack detection
     
     try:
         # Update status to deploying
@@ -125,36 +133,81 @@ async def run_deployment(request: DeployRequest):
         app_path = f"{app_base}/{request.subfolder}" if request.subfolder else app_base
 
         # Detect stack — blocking
+        logger.info("Detecting stack...")
         stack_info = await loop.run_in_executor(None, detect.detech_stack, app_path)
         if stack_info["stack"] == "unknown":
             raise Exception("Could not detect stack")
 
         stack_name = stack_info["stack"]
+        app_type = "static" if stack_name == "react-static" else "service"
+
+        # Detect entry point
+        logger.info("Detecting entry point...")
+        entry_info = await loop.run_in_executor(None, detect.detect_entry_point, app_path, stack_name, request.port)
+        if entry_info["command"] is None:
+            raise Exception(entry_info.get("error", "No entry point found"))
 
         # Setup dependencies — most blocking operation
+        logger.info("Setting up dependencies...")
         result = await loop.run_in_executor(None, setup.setup_app, app_path, stack_info["language"])
         if not result["success"]:
             raise Exception(f"Setup failed: {result['error']}")
 
-        # Create systemd service — blocking
-        result = await loop.run_in_executor(
-            None, service.create_service,
-            request.name, app_path, stack_name, request.port,
-            os.getenv("NEXUS_USER", "ashutoshshukla"), request.env_vars
-        )
-        if not result["success"]:
-            raise Exception(f"Service failed: {result['error']}")
+        # Build step for nextjs and react-static
+        if stack_name in ["nextjs", "react-static"]:
+            logger.info("Running build step...")
+            result = await loop.run_in_executor(None, setup.build_app, app_path, stack_name)
+            if not result["success"]:
+                raise Exception(f"Build failed: {result['error']}")
 
-        # Create nginx config — blocking
-        result = await loop.run_in_executor(None, nginx.create_nginx_config, request.name, request.port)
-        if not result["success"]:
-            raise Exception(f"Nginx failed: {result['error']}")
+        if app_type == "static":
+            # Static app — no systemd service, just nginx
+            logger.info("Static app detected — skipping systemd service...")
 
-        # Update status to running
+            # Detect whether dist or build folder exists
+            static_root = None
+            if os.path.isdir(f"{app_path}/dist"):
+                static_root = f"{app_path}/dist"
+            elif os.path.isdir(f"{app_path}/build"):
+                static_root = f"{app_path}/build"
+            else:
+                raise Exception("Build succeeded but no dist/ or build/ folder found")
+
+            # Create nginx config for static files
+            logger.info("Creating nginx config for static app...")
+            result = await loop.run_in_executor(
+                None, nginx.create_nginx_config,
+                request.name, request.port, "static", static_root
+            )
+            if not result["success"]:
+                raise Exception(f"Nginx failed: {result['error']}")
+        else:
+            # Normal service app — create systemd service + nginx proxy
+            logger.info("Creating systemd service...")
+            result = await loop.run_in_executor(
+                None, service.create_service,
+                request.name, app_path, entry_info["command"], request.port,
+                os.getenv("NEXUS_USER", "ashutoshshukla"), request.env_vars
+            )
+            if not result["success"]:
+                raise Exception(f"Service failed: {result['error']}")
+
+            # Create nginx config — blocking
+            logger.info("Creating nginx config...")
+            result = await loop.run_in_executor(
+                None, nginx.create_nginx_config,
+                request.name, request.port, "service"
+            )
+            if not result["success"]:
+                raise Exception(f"Nginx failed: {result['error']}")
+
+        # Update status to running (or static)
+        final_status = "static" if app_type == "static" else "running"
+        logger.info(f"Updating status to {final_status}...")
         async with db.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE apps SET status = 'running' WHERE name = $1",
-                request.name
+                "UPDATE apps SET status = $1, app_type = $2 WHERE name = $3",
+                final_status, app_type, request.name
             )
         logger.info(f"App deployed successfully: {request.name}")
 
@@ -166,8 +219,8 @@ async def run_deployment(request: DeployRequest):
                 "UPDATE apps SET status = 'failed' WHERE name = $1",
                 request.name
             )
-        # Rollback
-        await loop.run_in_executor(None, rollback, request.name, app_base)
+        # Rollback — pass app_type so static apps skip systemd cleanup
+        await loop.run_in_executor(None, rollback, request.name, app_base, app_type)
     
 # Deploy an app
 @router.post("/deploy")
@@ -198,8 +251,8 @@ async def deploy_app(request: DeployRequest):
         # Insert into DB immediately with status pending
         async with db.pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO apps (name, repo_url, port, subfolder, domain, status) VALUES ($1, $2, $3, $4, $5, $6)",
-                request.name, request.repo_url, request.port, request.subfolder, f"{request.name}.localhost", "pending"
+                "INSERT INTO apps (name, repo_url, port, subfolder, domain, status, app_type) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                request.name, request.repo_url, request.port, request.subfolder, f"{request.name}.localhost", "pending", "service"
             )
 
         # Fire and forget — don't await
@@ -229,9 +282,10 @@ async def remove_app(app_name: str):
                 return {"error": "App not found"}
         
         app_base = f"/srv/apps/{app_name}"
+        app_type = row["app_type"] or "service"
         
-        # Stop and cleanup everything
-        await asyncio.get_event_loop().run_in_executor(None, rollback, app_name, app_base)
+        # Stop and cleanup everything — skip systemd for static apps
+        await asyncio.get_event_loop().run_in_executor(None, rollback, app_name, app_base, app_type)
         logger.info(f"App stopped and cleaned up: {app_name}")
         
         # Remove from DB

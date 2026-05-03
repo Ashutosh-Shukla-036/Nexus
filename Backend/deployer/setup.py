@@ -33,3 +33,13 @@ def setup_app(path: str, stack: str) -> dict:
         return {"success": True}
     else:
         return {"success": False, "error": "Unsupported stack"}
+
+
+def build_app(path: str, stack: str) -> dict:
+    """Run npm run build for stacks that need a build step (nextjs, react-static)."""
+    if stack in ["nextjs", "react-static"]:
+        result = subprocess.run(["npm", "run", "build"], cwd=path, capture_output=True, text=True)
+        if result.returncode != 0:
+            return {"success": False, "error": f"Build failed: {result.stderr}"}
+        return {"success": True}
+    return {"success": True}

@@ -13,9 +13,16 @@ async def stream_logs(websocket: WebSocket, service_name: str):
     await websocket.accept()    
     logger.info(f"Client connected for service {service_name}")
 
-    # Start the journalctl process to stream logs
+    if service_name == "nexus":
+        command = ["sudo", "tail", "-f", "-n", "50", "/var/log/nexus/nexus.log"]
+    elif service_name == "nginx":
+        command = ["sudo", "tail", "-f", "-n", "50", "/var/log/nginx/access.log"]
+    else:
+        command = ["sudo", "journalctl", "-u", service_name, "-f", "-n", "50"]
+
+    # Start the process to stream logs
     process = subprocess.Popen(
-        ["sudo", "journalctl", "-u", service_name, "-f", "-n", "50"],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True

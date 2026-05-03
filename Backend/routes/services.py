@@ -16,7 +16,7 @@ class Service(BaseModel):
 @router.get("/")
 async def get_services() -> list:
     try:
-        logger.info("Fetching all services")
+        logger.debug("Fetching all services")
         # Borrow a connection from the pool
         async with db.pool.acquire() as conn:
             # Get all services from the database
@@ -36,7 +36,7 @@ async def get_services() -> list:
                 "enabled": service["enabled"],
                 "status": status
             })
-        logger.info(f"Services fetched: {len(result)}")
+        logger.debug(f"Services fetched: {len(result)}")
         # Return the result
         return result
     except Exception as e:

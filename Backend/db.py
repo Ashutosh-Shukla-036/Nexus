@@ -52,10 +52,11 @@ async def create_tables():
                 name TEXT NOT NULL UNIQUE,
                 repo_url TEXT NOT NULL,
                 port INTEGER NOT NULL,
-                domain TEXT NOT NULL,
+                domain TEXT,
                 status TEXT DEFAULT 'stopped',
                 created_at TIMESTAMP DEFAULT now(),
-                subfolder Text
+                subfolder Text,
+                app_type TEXT DEFAULT 'service'
             );
 
             CREATE TABLE IF NOT EXISTS metrics (
@@ -80,4 +81,7 @@ async def create_tables():
                 enabled BOOLEAN DEFAULT true,
                 created_at TIMESTAMP DEFAULT now()
             );
+
+            ALTER TABLE apps ADD COLUMN IF NOT EXISTS app_type TEXT DEFAULT 'service';
+            ALTER TABLE apps ALTER COLUMN domain DROP NOT NULL;
         ''')

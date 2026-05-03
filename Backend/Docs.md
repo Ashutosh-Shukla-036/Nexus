@@ -1,334 +1,490 @@
-### Deployer plan
-```
-~/nexus/Backend/
-├── deployer/
-│   ├── __init__.py
-│   ├── clone.py        
-│   ├── setup.py        
-│   ├── service.py      
-│   ├── detect.py       
-│   └── nginx.py        
-├── routes/
-│   ├── apps.py        
-│   ├── metrics.py      
-│   ├── services.py     
-│   └── logs.py         
-└── workers/
-    └── monitor.py      
-```
+# Nexus Backend — v1.1 Documentation
 
-### Deployment pipeline 
-```
-1. detect.py   → is this FastAPI or Node.js?
-2. clone.py    → git clone to /srv/apps/<name>
-3. setup.py    → install dependencies
-4. service.py  → create systemd service file
-5. nginx.py    → create nginx config
-6. systemctl enable + start
-7. Update apps table in DB
-```
+> A self-hosted PaaS (like Coolify / Render) that runs on your machine.
+> Deploy apps from GitHub, manage systemd services, view live logs, monitor system metrics — all from one dashboard.
 
-### Delete flow
-```
-1. systemctl stop <app>
-2. systemctl disable <app>
-3. rm /etc/systemd/system/<app>.service
-4. systemctl daemon-reload
-5. rm -rf /srv/apps/<app>
-6. rm /etc/nginx/sites-enabled/<app>
-7. rm /etc/nginx/sites-available/<app>
-8. nginx reload
-9. DELETE FROM apps WHERE name = <app>
-```
+---
 
-### Add these to /etc/sudoers file using sudo EDITOR=vim visudo
-```
-ashutoshshukla ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/journalctl, /usr/bin/tee, /usr/sbin/nginx, /usr/bin/ln, /usr/bin/rm
-```
+## Architecture
 
-### Update routes/apps.py
 ```
-POST /apps/scan          → clone repo temporarily, return folder list
-POST /apps/deploy        → full deployment pipeline
-GET  /apps/              → list all deployed apps
-GET  /apps/{app_name}    → get single app details
-DELETE /apps/{app_name}  → full cleanup
-```
-
-### deploy flow
-```
-async def deploy(request):
-    1. Validate input (name, repo_url, port, subfolder)
-    2. Check port not taken (DB + socket)
-    3. clone_repo()
-    4. detect_stack()
-    5. setup_app()
-    6. create_service()
-    7. create_nginx_config()
-    8. INSERT into apps table
-    9. Return success
-```
-
-### deploy pipeline
-```
-1) Check port not taken in DB
-2) Check port not taken on system using socket
-3) Move /tmp/nexus-scan/<scan_id> to /srv/apps/<name>
-4) Set app_path — if subfolder: f"/srv/apps/{name}/{subfolder}" else f"/srv/apps/{name}"
-5) detect.detech_stack(app_path)
-6) setup.setup_app(app_path, stack)
-7) service.create_service(name, app_path, stack, port, user)
-8) nginx.create_nginx_config(name, port)
-9) INSERT into apps table
-10) Return success
-```
-
-### Remove app
-```
-1. stop <app>
-2. disable <app>
-3. rm -rf /srv/apps/<app>
-4. rm /etc/systemd/system/<app>.service
-5. rm -rf /etc/nginx/sites-available/<app>
-6. rm -rf /etc/nginx/sites-enabled/<app>
-7. nginx reload
-8. delete from DB
-```
-
-### Nexus — Full Project Summary
-```
-What Nexus is:
-A self-hosted PaaS (like Coolify/Render) that runs on your machine. Deploy apps from GitHub, manage systemd services, view live logs, monitor system metrics — all from one dashboard.
-
-Architecture:
-Browser (React + Vite)
+Browser (React + Vite)  ← frontend (not started yet)
         ↓
-Nginx (port 80) — reverse proxy
+Nginx (port 80)  ← reverse proxy for deployed apps
         ↓
-FastAPI (port 8000) — Nexus backend
+FastAPI (port 8000)  ← Nexus backend API
         ↓
-┌─────────────────────────────┐
-│  PostgreSQL  │  Redis  │ systemd │
-└─────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  PostgreSQL  │  systemd  │  journalctl   │
+└──────────────────────────────────────────┘
+```
 
-Backend location: ~/nexus/Backend/
-Stack: FastAPI + asyncpg + PostgreSQL + Nginx + systemd + React frontend (not started yet)
+**Stack:** FastAPI · asyncpg · PostgreSQL · Nginx · systemd · psutil
 
-Complete backend structure:
+---
+
+## Project Structure
+
+```
 Backend/
-├── main.py              ✅
-├── db.py                ✅
-├── logger.py            ✅
-├── requirements.txt     ✅
-├── .env                 ✅
+├── main.py                 → app entry point, lifespan, CORS, logging middleware
+├── db.py                   → asyncpg connection pool + table creation
+├── logger.py               → centralized logging (file + stdout)
+├── requirements.txt        → Python dependencies
+├── .env                    → DATABASE_URL, NEXUS_USER
+├── .gitignore
+│
 ├── routes/
-│   ├── metrics.py       ✅
-│   ├── services.py      ✅
-│   ├── logs.py          ✅
-│   └── apps.py          ✅
+│   ├── apps.py             → deploy, scan, list, get, delete apps
+│   ├── services.py         → register, start/stop/restart, enable/disable, delete services
+│   ├── metrics.py          → system metrics (CPU, RAM, disk)
+│   └── logs.py             → real-time log streaming via WebSocket
+│
 ├── deployer/
-│   ├── detect.py        ✅
-│   ├── clone.py         ✅
-│   ├── setup.py         ✅
-│   ├── service.py       ✅
-│   └── nginx.py         ✅
+│   ├── clone.py            → git clone repo to /tmp/nexus-scan/<scan_id>
+│   ├── detect.py           → stack detection + entry point detection
+│   ├── setup.py            → install dependencies (pip/npm) + build step
+│   ├── service.py          → generate systemd .service file, enable + start
+│   └── nginx.py            → generate nginx config (proxy or static), enable + reload
+│
 └── workers/
-    └── monitor.py       ✅
-
-Database schema (PostgreSQL):
-sqlapps (id, name, repo_url, port, domain, subfolder, status, created_at)
-metrics (id, cpu, ram, disk, recorded_at)
-uptime_checks (id, app_id, status_code, response_time, checked_at)
-services (id, name, enabled, created_at)
-
-All API routes:
-GET    /health                    → health check
-GET    /metrics/                  → get metrics history
-POST   /metrics/collect           → manually collect metrics
-
-GET    /services/                 → list tracked services + live status
-POST   /services/add              → register service in Nexus
-POST   /services/{name}/start     → start service
-POST   /services/{name}/stop      → stop service
-POST   /services/{name}/restart   → restart service
-POST   /services/{name}/enable    → enable on boot
-POST   /services/{name}/disable   → disable on boot
-DELETE /services/{name}           → remove from Nexus
-
-WS     /logs/{name}               → real-time log streaming via WebSocket
-
-GET    /apps/                     → list deployed apps
-GET    /apps/{name}               → get single app
-POST   /apps/scan                 → clone repo, return folder list
-POST   /apps/deploy               → full deployment pipeline
-DELETE /apps/{name}               → full cleanup
-
-Deployment pipeline:
-1. Port check (DB + socket)
-2. git clone → /tmp/nexus-scan/<scan_id>
-3. detect stack (FastAPI/Flask/Express/Next.js)
-4. pip install / npm install
-5. Generate systemd service file
-6. Generate nginx config
-7. systemctl enable + start
-8. INSERT into apps table
-9. Rollback everything if any step fails
-
-Delete pipeline:
-1. systemctl stop + disable
-2. rm service file
-3. systemctl daemon-reload
-4. rm nginx sites-available + sites-enabled
-5. nginx reload
-6. rm -rf /srv/apps/<name>
-7. DELETE FROM apps
-
-Background workers:
-
-Metrics collected every 60 seconds automatically
-Temp scan folders cleaned up every hour
-Metrics older than 1 hour deleted automatically
-
-
-Sudoers configured for:
-/usr/bin/systemctl
-/usr/bin/journalctl
-/usr/bin/tee
-/usr/sbin/nginx
-
-What's pending:
-Testing:
-
-Full deploy pipeline not tested yet — pip hanging on LeapMile server
-Need to test on WSL or fix pip issue
-
-Frontend (not started):
-Pages needed:
-- Dashboard    → server health cards, metrics charts
-- Services     → list + control buttons + live logs
-- Apps         → deployed apps + deploy new app form
-- Logs         → real-time log viewer per service
-After frontend:
-
-Authentication (JWT) — anyone can hit API right now
-Rate limiting
-Input validation
-HTTPS via Let's Encrypt
-Make Nexus itself a systemd service
-
-
-Key files to share in new chat:
-
-main.py
-db.py
-routes/apps.py
-deployer/service.py
+    └── monitor.py          → background: collect metrics every 60s, cleanup temp scans
 ```
 
+---
 
-### Entry Point Detection — Full Plan
+## Database Schema (PostgreSQL)
+
+### `apps`
+| Column       | Type      | Default              | Notes                          |
+|-------------|-----------|----------------------|--------------------------------|
+| id          | UUID (PK) | `gen_random_uuid()`  |                                |
+| name        | TEXT      | NOT NULL, UNIQUE     | app identifier (alphanumeric + hyphens) |
+| repo_url    | TEXT      | NOT NULL             | GitHub repo URL                |
+| port        | INTEGER   | NOT NULL             | port the app listens on        |
+| domain      | TEXT      | nullable             | auto-set to `<name>.localhost` |
+| subfolder   | TEXT      | nullable             | subfolder within the repo      |
+| status      | TEXT      | `'stopped'`          | `pending → deploying → running / static / failed` |
+| app_type    | TEXT      | `'service'`          | `'service'` (systemd) or `'static'` (nginx only) |
+| created_at  | TIMESTAMP | `now()`              |                                |
+
+### `metrics`
+| Column      | Type      | Default              |
+|------------|-----------|----------------------|
+| id         | UUID (PK) | `gen_random_uuid()`  |
+| cpu        | FLOAT     |                      |
+| ram        | FLOAT     |                      |
+| disk       | FLOAT     |                      |
+| recorded_at| TIMESTAMP | `now()`              |
+
+> Metrics older than **1 hour** are auto-deleted on each collection cycle.
+
+### `uptime_checks`
+| Column        | Type      | Default              | Notes                          |
+|--------------|-----------|----------------------|--------------------------------|
+| id           | UUID (PK) | `gen_random_uuid()`  |                                |
+| app_id       | UUID (FK) | REFERENCES apps(id)  | `ON DELETE CASCADE`            |
+| status_code  | INTEGER   |                      |                                |
+| response_time| FLOAT     |                      |                                |
+| checked_at   | TIMESTAMP | `now()`              |                                |
+
+### `services`
+| Column     | Type      | Default              |
+|-----------|-----------|----------------------|
+| id        | UUID (PK) | `gen_random_uuid()`  |
+| name      | TEXT      | NOT NULL, UNIQUE     |
+| enabled   | BOOLEAN   | `true`               |
+| created_at| TIMESTAMP | `now()`              |
+
+---
+
+## API Routes
+
+### Health Check
+| Method | Path       | Description       |
+|--------|-----------|-------------------|
+| GET    | `/health` | Returns `{"status": "ok"}` |
+
+---
+
+### Metrics — `/metrics`
+
+| Method | Path                | Description                              |
+|--------|---------------------|------------------------------------------|
+| GET    | `/metrics/`         | Get all metrics (sorted newest first)    |
+| POST   | `/metrics/collect`  | Manually trigger metric collection       |
+
+**GET `/metrics/`** → Returns:
+```json
+[
+  { "cpu": 12.5, "ram": 45.2, "disk": 67.8, "recorded_at": "2026-05-03T12:00:00" }
+]
 ```
-Supported stacks and detection strategy:
-Python:
-  detect:   requirements.txt exists
-  framework: scan requirements.txt for fastapi/flask/django
-  entry:    main.py → app.py → server.py → wsgi.py → Procfile
-  command:
-    fastapi/flask → uvicorn <entry>:<instance> --host 0.0.0.0 --port <port>
-    django        → gunicorn <project>.wsgi:application --bind 0.0.0.0:<port>
 
-Node.js:
-  detect:   package.json exists
-  framework: scan dependencies for express/koa/nestjs/next/react
-  entry:    package.json "scripts.start" → index.js → server.js → app.js
-  command:
-    express/koa/nestjs → node <entry>
-    next.js            → npm run build && npm run start
-    plain node         → node <entry>
-
-React (Static):
-  detect:   package.json exists + react in dependencies + NO server framework
-  build:    npm run build → produces /dist or /build folder
-  serve:    nginx serves static files directly — no process needed
-  command:  STATIC (no systemd service needed — just nginx config pointing to dist/)
-
-Detection priority order:
-1. Has requirements.txt?
-   → Python project
-   → scan for fastapi, flask, django
-
-2. Has package.json?
-   → Node/React project
-   → check dependencies:
-     - has "react" but no express/next → STATIC React
-     - has "next" → Next.js
-     - has "express" → Express
-     - has "@nestjs/core" → NestJS
-     - has "koa" → Koa
-
-3. Neither?
-   → unknown, reject with clear error
-
-Entry point detection for Python:
-Priority:
-1. main.py   → uvicorn main:app
-2. app.py    → uvicorn app:app
-3. server.py → uvicorn server:app
-4. wsgi.py   → gunicorn wsgi:application (Django)
-5. Procfile  → parse "web:" line
-
-Instance name detection:
-- scan file for: "= FastAPI()" or "= Flask(__name__)"
-- extract variable name before =
-- default to "app" if not found
-
-Entry point detection for Node.js:
-Priority:
-1. package.json "scripts.start" exists → use that command
-2. index.js exists → node index.js
-3. server.js exists → node server.js
-4. app.js exists → node app.js
-5. none found → reject with clear error
-
-Next.js special case:
-→ always: npm run build && npm run start
-→ or: node .next/standalone/server.js
-
-React static special case:
-Detection:
-- has react in dependencies
-- does NOT have express, next, koa, nestjs
-
-Build:
-- npm run build
-- check for /dist folder (Vite) or /build folder (CRA)
-
-Nginx config:
-- root /srv/apps/<name>/dist (or /build)
-- try_files $uri $uri/ /index.html
-- no proxy_pass needed
-
-Systemd:
-- NO service file created
-- nginx serves files directly
-- status tracked as "static"
-
-New column needed in apps table:
-sqlALTER TABLE apps ADD COLUMN app_type TEXT DEFAULT 'service';
--- values: 'service' (has systemd) or 'static' (nginx only)
-
-Changes needed in code:
-detect.py   → add detect_entry_point(path, stack) function
-service.py  → use detected command instead of hardcoded uvicorn
-nginx.py    → handle static case (root instead of proxy_pass)
-apps.py     → skip create_service() if app_type == 'static'
-db.py       → add app_type column to apps table
-
-Implementation order when ready:
-1. Update detect.py — detect_entry_point()
-2. Update db.py — add app_type column
-3. Update service.py — use detected command
-4. Update nginx.py — static vs proxy config
-5. Update apps.py — skip systemd for static apps
-6. Test each stack individually
+**POST `/metrics/collect`** → Returns:
+```json
+{ "cpu": 12.5, "ram": 45.2, "disk": 67.8, "status": "collected" }
 ```
+
+---
+
+### Services — `/services`
+
+| Method | Path                              | Description                          |
+|--------|-----------------------------------|--------------------------------------|
+| GET    | `/services/`                      | List all tracked services + live status |
+| POST   | `/services/add`                   | Register a systemd service in Nexus  |
+| POST   | `/services/{name}/start`          | Start a service                      |
+| POST   | `/services/{name}/stop`           | Stop a service                       |
+| POST   | `/services/{name}/restart`        | Restart a service                    |
+| POST   | `/services/{name}/enable`         | Enable service on boot               |
+| POST   | `/services/{name}/disable`        | Disable service on boot              |
+| DELETE | `/services/{name}`                | Remove service from Nexus            |
+
+**POST `/services/add`** — Request body:
+```json
+{ "name": "my-service", "enabled": true }
+```
+
+**GET `/services/`** → Returns:
+```json
+[
+  { "id": "uuid", "name": "nginx", "enabled": true, "status": "active" }
+]
+```
+
+> The `status` field is queried **live** from `systemctl is-active` on every request.
+
+**DELETE `/services/{name}`** — Guards:
+- Cannot delete a **running** service → stop it first
+- Cannot delete an **enabled** service → disable it first
+
+---
+
+### Logs — `/logs` (WebSocket)
+
+| Protocol  | Path               | Description                            |
+|-----------|--------------------|----------------------------------------|
+| WebSocket | `/logs/{name}`     | Real-time log streaming via journalctl |
+
+- Streams output of `sudo journalctl -u <name> -f -n 50`
+- Sends last 50 lines on connect, then streams new lines
+- Process is killed when the client disconnects
+
+---
+
+### Apps — `/apps`
+
+| Method | Path              | Description                          |
+|--------|-------------------|--------------------------------------|
+| GET    | `/apps/`          | List all deployed apps               |
+| GET    | `/apps/{name}`    | Get single app details               |
+| POST   | `/apps/scan`      | Clone repo temporarily, return folder list |
+| POST   | `/apps/deploy`    | Full deployment pipeline (async)     |
+| DELETE | `/apps/{name}`    | Full cleanup + delete                |
+
+**POST `/apps/scan`** — Request body:
+```json
+{ "repo_url": "https://github.com/user/repo.git" }
+```
+Returns:
+```json
+{ "status": "ok", "scan_id": "uuid", "folders": ["frontend", "backend", "docs"] }
+```
+
+**POST `/apps/deploy`** — Request body:
+```json
+{
+  "name": "my-app",
+  "repo_url": "https://github.com/user/repo.git",
+  "port": 3001,
+  "scan_id": "uuid-from-scan",
+  "subfolder": "backend",
+  "env_vars": { "NODE_ENV": "production" }
+}
+```
+Returns immediately (deployment runs in background):
+```json
+{
+  "status": "deploying",
+  "message": "Deployment started in background",
+  "check_status": "/apps/my-app"
+}
+```
+
+**Validations before deploy:**
+- `name` must match `^[a-zA-Z0-9-]+$`
+- Port not already taken in DB
+- Port not already in use on system (socket check)
+- App name not already exists
+- App folder doesn't already exist at `/srv/apps/<name>`
+- Scan ID must exist at `/tmp/nexus-scan/<scan_id>`
+
+---
+
+## Deployment Pipeline
+
+The full deployment runs **asynchronously** as a background task via `asyncio.create_task()`.
+
+```
+Step  Action                                  Module
+────  ──────────────────────────────────────  ──────────────
+  1   Validate (port, name, scan_id)          routes/apps.py
+  2   INSERT into apps (status = 'pending')   routes/apps.py
+  3   Return 200 immediately                  routes/apps.py
+
+  ─── Background task starts ───
+  4   UPDATE status → 'deploying'             routes/apps.py
+  5   Move /tmp/nexus-scan/<id> → /srv/apps/  routes/apps.py
+  6   Detect stack (FastAPI/Flask/Express…)    deployer/detect.py
+  7   Detect entry point + start command      deployer/detect.py
+  8   Install dependencies (pip/npm)          deployer/setup.py
+  9   Build (Next.js / React static only)     deployer/setup.py
+ 10   Create systemd service (or skip)        deployer/service.py
+ 11   Create nginx config                     deployer/nginx.py
+ 12   UPDATE status → 'running' or 'static'   routes/apps.py
+```
+
+**On failure at any step:**
+- Status is set to `'failed'`
+- Full rollback executes (systemd stop/disable/rm, nginx cleanup, rm app folder)
+- Static apps skip systemd cleanup during rollback
+
+---
+
+## Delete Pipeline
+
+```
+Step  Action
+────  ──────────────────────────────────────────────
+  1   Verify app exists in DB
+  2   systemctl stop + disable  (skipped for static)
+  3   rm /etc/systemd/system/<name>.service  (skipped for static)
+  4   systemctl daemon-reload  (skipped for static)
+  5   rm /etc/nginx/sites-enabled/<name>
+  6   rm /etc/nginx/sites-available/<name>
+  7   systemctl reload nginx
+  8   rm -rf /srv/apps/<name>
+  9   DELETE FROM apps WHERE name = <name>
+```
+
+---
+
+## Stack Detection (`deployer/detect.py`)
+
+### `detech_stack(path)` — Identifies the framework
+
+**Detection priority:**
+
+| Priority | Indicator             | Stack Detected     | Language |
+|----------|----------------------|--------------------|----------|
+| 1        | `requirements.txt` → fastapi | `fastapi`      | python   |
+| 1        | `requirements.txt` → flask   | `flask`        | python   |
+| 1        | `requirements.txt` → django  | `django`       | python   |
+| 2        | `package.json` → express     | `express`      | node     |
+| 2        | `package.json` → next        | `nextjs`       | node     |
+| 2        | `package.json` → @nestjs/core| `nestjs`       | node     |
+| 2        | `package.json` → koa         | `koa`          | node     |
+| 2        | `package.json` → react (only)| `react-static` | node     |
+
+> Python deps are parsed using `packaging.requirements.Requirement` for accuracy.
+> Node deps merge both `dependencies` and `devDependencies`.
+
+### `detect_entry_point(path, stack, port)` — Determines the start command
+
+| Stack         | Entry Point Resolution                                              | Command                                              |
+|--------------|---------------------------------------------------------------------|------------------------------------------------------|
+| fastapi/flask | `main.py` → `app.py` → `server.py` (scans for `FastAPI()` / `Flask()` instance name) | `<path>/venv/bin/uvicorn <module>:<instance> --host 0.0.0.0 --port <port>` |
+| django        | Finds `wsgi.py` inside Django project subfolder                     | `<path>/venv/bin/gunicorn <project>.wsgi:application --bind 0.0.0.0:<port>` |
+| express/koa/nestjs | `scripts.start` → `index.js` → `server.js` → `app.js`         | `npm run start` or `node <entry>`                    |
+| nextjs        | Always uses npm scripts                                             | `npm run start`                                      |
+| react-static  | N/A — no process needed                                             | `STATIC` (nginx serves files directly)               |
+
+---
+
+## Dependency Setup (`deployer/setup.py`)
+
+### `setup_app(path, language)`
+
+| Language | Steps                                                    |
+|----------|----------------------------------------------------------|
+| python   | `python3 -m venv <path>/venv` → `pip install -r requirements.txt` |
+| node     | `npm install`                                            |
+
+### `build_app(path, stack)`
+- Runs `npm run build` for `nextjs` and `react-static` stacks
+- React static: checks for `/dist` (Vite) or `/build` (CRA) after build
+
+---
+
+## Systemd Service (`deployer/service.py`)
+
+### `create_service(app_name, path, command, port, user, env_vars)`
+
+Generates a `.service` file at `/etc/systemd/system/<name>.service`:
+```ini
+[Unit]
+Description=<name> — deployed by Nexus
+After=network.target
+
+[Service]
+User=<user>
+WorkingDirectory=<path>
+Environment="PORT=<port>"
+Environment="KEY=VALUE"          ← custom env_vars
+ExecStart=<detected command>
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then runs: `daemon-reload` → `enable` → `start`
+
+> **Static apps skip service creation entirely** — nginx serves files directly.
+
+---
+
+## Nginx Config (`deployer/nginx.py`)
+
+### `create_nginx_config(app_name, port, app_type, static_root)`
+
+**Service apps** (proxy):
+```nginx
+server {
+    listen 80;
+    server_name <name>.localhost;
+
+    location / {
+        proxy_pass http://127.0.0.1:<port>;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**Static apps** (direct file serving):
+```nginx
+server {
+    listen 80;
+    server_name <name>.localhost;
+
+    root <static_root>;      ← /srv/apps/<name>/dist or /build
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+Then: write to `sites-available` → symlink to `sites-enabled` → `nginx -t` → `systemctl reload nginx`
+
+---
+
+## Background Workers (`workers/monitor.py`)
+
+Runs as an `asyncio.create_task()` in the FastAPI lifespan:
+
+| Task                  | Interval | Description                                      |
+|-----------------------|----------|--------------------------------------------------|
+| Metric collection     | 60s      | CPU, RAM, disk → INSERT into metrics table       |
+| Metrics cleanup       | 60s      | DELETE metrics older than 1 hour                 |
+| Temp scan cleanup     | 60s      | Delete `/tmp/nexus-scan/*` folders older than 1hr |
+
+---
+
+## Application Entry Point (`main.py`)
+
+### Lifespan
+- **Startup:** Connect to DB → Create tables → Start background monitor
+- **Shutdown:** Cancel monitor task → Disconnect from DB
+
+### Middleware
+- **CORS:** Allows `http://localhost:5173` (Vite dev server)
+- **Logging:** Logs every `METHOD /path` and response status code
+
+### Routers
+```python
+app.include_router(metrics.router)    # /metrics
+app.include_router(services.router)   # /services
+app.include_router(logs.router)       # /logs (WebSocket)
+app.include_router(apps.router)       # /apps
+```
+
+---
+
+## Logging (`logger.py`)
+
+- File output: `/var/log/nexus/nexus.log`
+- Console output: `stdout`
+- Format: `%(asctime)s — %(levelname)s — %(message)s`
+
+---
+
+## Environment Variables (`.env`)
+
+| Variable       | Description                    | Example                                        |
+|---------------|--------------------------------|------------------------------------------------|
+| `DATABASE_URL` | PostgreSQL connection string   | `postgresql://nexus_user:nexus123@localhost/nexus` |
+| `NEXUS_USER`   | Linux user for systemd services | `ashutoshshukla`                                |
+
+---
+
+## Dependencies (`requirements.txt`)
+
+| Package           | Purpose                              |
+|-------------------|--------------------------------------|
+| fastapi           | Web framework                        |
+| uvicorn           | ASGI server                          |
+| asyncpg           | Async PostgreSQL driver              |
+| websockets        | WebSocket support                    |
+| python-dotenv     | Load `.env` file                     |
+| psutil            | System metrics (CPU, RAM, disk)      |
+| redis             | Redis client (reserved for future)   |
+| python-multipart  | Form data parsing                    |
+| packaging         | Parse `requirements.txt` entries     |
+
+---
+
+## Server Setup
+
+### Sudoers Configuration
+Add to `/etc/sudoers` via `sudo EDITOR=vim visudo`:
+```
+<user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/journalctl, /usr/bin/tee, /usr/sbin/nginx, /usr/bin/ln, /usr/bin/rm
+```
+
+### Required System Services
+- PostgreSQL (running on default port 5432)
+- Nginx (running on port 80)
+
+### Running the Backend
+```bash
+cd ~/nexus/Backend
+source venv/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## Future Roadmap
+
+### Frontend (not started)
+- **Dashboard** → server health cards, metrics charts
+- **Services** → list + control buttons + live logs
+- **Apps** → deployed apps + deploy new app form
+- **Logs** → real-time log viewer per service
+
+### Security & Production
+- Authentication (JWT) — API is currently open
+- Rate limiting
+- Input validation hardening
+- HTTPS via Let's Encrypt
+- Make Nexus itself a systemd service
